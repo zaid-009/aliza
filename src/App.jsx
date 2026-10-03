@@ -15,8 +15,10 @@ import { ToastContainer } from './components/ToastContainer';
 import { ParticleCanvas } from './components/ParticleCanvas';
 
 // Connect to local Socket.IO server or proxy
-const SOCKET_URL = window.location.hostname === 'localhost' ? 'http://localhost:4000' : '/';
-
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ||
+  (window.location.hostname === 'localhost'
+    ? 'http://localhost:4000'
+    : '/');
 export default function App() {
   const [currentView, setCurrentView] = useState('landing'); // 'landing' | 'room'
   const [isInitialLoading, setIsInitialLoading] = useState(true);
