@@ -47,7 +47,79 @@ export const RoomUI = ({
 
   // Chat minimization & Mobile drawer state
   const [isChatMinimized, setIsChatMinimized] = useState(false);
-  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  .video-stage {
+  position: relative;
+  width: 100%;
+}
+
+.mobile-chat-overlay {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  .mobile-chat-overlay {
+    display: block;
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    height: 38%;
+    max-height: 300px;
+    z-index: 60;
+  }
+
+  .mobile-chat-overlay .chat-panel-container {
+    height: 100%;
+    min-height: 0;
+    border-radius: 16px;
+    background: rgba(8, 10, 13, 0.72);
+    border: 1px solid rgba(255,255,255,0.12);
+    backdrop-filter: blur(10px);
+  }
+
+  .mobile-chat-overlay .chat-panel-header {
+    padding: 8px 12px;
+    background: rgba(20, 23, 28, 0.72);
+  }
+
+  .mobile-chat-overlay .chat-messages-area {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .mobile-chat-overlay .chat-msg-content {
+    background: rgba(20, 23, 28, 0.72);
+    max-width: 82%;
+    padding: 6px 9px;
+    font-size: 0.78rem;
+  }
+
+  .mobile-chat-overlay .chat-avatar {
+    width: 26px;
+    height: 26px;
+  }
+
+  .mobile-chat-overlay .chat-reactions-bar {
+    padding: 5px 8px;
+    gap: 4px;
+  }
+
+  .mobile-chat-overlay .reaction-emoji-btn {
+    border: 0;
+    background: transparent;
+    padding: 2px 5px;
+    font-size: 0.95rem;
+  }
+
+  .mobile-chat-overlay .chat-input-row {
+    padding: 7px 8px;
+  }
+
+  .mobile-chat-overlay .chat-textarea {
+    padding: 7px 10px;
+    font-size: 0.8rem;
+  }
+}
 
   const isHost = currentUser?.id === room?.hostId || currentUser?.isHost;
   const isHostOnly = room?.controlsMode === 'hostOnly';
@@ -269,30 +341,41 @@ export const RoomUI = ({
       <main className="unified-grid">
         {/* Left Video & Controls Column */}
         <div className="video-column">
-          <UnifiedVideoPlayer
-            videoProvider={room?.videoProvider || 'youtube'}
-            videoId={room?.videoId}
-            videoUrl={room?.videoUrl}
-            videoTitle={room?.videoTitle}
-            playbackState={room?.playbackState}
-            isHost={isHost}
-            isHostOnly={isHostOnly}
-            onPlay={onPlayVideo}
-            onPause={onPauseVideo}
-            onSeek={onSeekVideo}
-            onChangeVideo={() => setShowChangeVideoModal(true)}
-            floatingReactions={floatingReactions}
-          />
+          <div className="video-stage">
+  <UnifiedVideoPlayer
+    videoProvider={room?.videoProvider || 'youtube'}
+    videoId={room?.videoId}
+    videoUrl={room?.videoUrl}
+    videoTitle={room?.videoTitle}
+    playbackState={room?.playbackState}
+    isHost={isHost}
+    isHostOnly={isHostOnly}
+    onPlay={onPlayVideo}
+    onPause={onPauseVideo}
+    onSeek={onSeekVideo}
+    onChangeVideo={() => setShowChangeVideoModal(true)}
+    floatingReactions={floatingReactions}
+  />
 
-          {/* WebRTC Voice Chat Controls & Avatars */}
-          <VoiceChatBar
-            socket={socket}
-            roomId={room?.id}
-            currentUserId={currentUser?.id}
-            currentUserName={currentUser?.name}
-            voiceUsers={voiceUsers}
-            showToast={showToast}
-          />
+  <div className="mobile-chat-overlay">
+    <ChatPanel
+      messages={room?.messages || []}
+      typingUsers={typingUsers}
+      onSendMessage={onSendMessage}
+      onSendReaction={onSendReaction}
+      onTyping={onTyping}
+    />
+  </div>
+</div>
+
+<VoiceChatBar
+  socket={socket}
+  roomId={room?.id}
+  currentUserId={currentUser?.id}
+  currentUserName={currentUser?.name}
+  voiceUsers={voiceUsers}
+  showToast={showToast}
+/>
         </div>
 
         {/* Right Chat Column (Desktop) */}

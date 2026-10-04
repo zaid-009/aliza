@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, PhoneOff, Radio, Users } from 'lucide-react';
+
+import React, { useEffect, useRef, useState } from 'react';
+import { Mic, MicOff, Volume2, VolumeX, PhoneOff, Radio } from 'lucide-react';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -21,165 +22,13 @@ export const VoiceChatBar = ({
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
 
+  const inVoiceRef = useRef(false);
   const localStreamRef = useRef(null);
-  const peerConnectionsRef = useRef(new Map()); // targetUserId -> RTCPeerConnection
-  const remoteAudioElementsRef = useRef(new Map()); // targetUserId -> HTMLAudioElement
+  const peerConnectionsRef = useRef(new Map());
+  const remoteAudioElementsRef = useRef(new Map());
+  const pendingIceCandidatesRef = useRef(new Map());
 
-  // Clean up WebRTC peer connections when leaving room
-  useEffect(() => {
-    return () => {
-      leaveVoice();
-    };
-  }, []);
-
-  // WebRTC Socket Signaling Listeners
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleVoiceUserJoined = async ({ userId, user }) => {
-      if (!inVoice || userId === currentUserId) return;
-      console.log(`[WebRTC] Voice user joined: ${userId}, creating offer...`);
-      createPeerOffer(userId);
-    };
-
-    const handleVoiceOffer = async ({ fromUserId, offer }) => {
-      if (!inVoice) return;
-      console.log(`[WebRTC] Received offer from ${fromUserId}, sending answer...`);
-      handlePeerOffer(fromUserId, offer);
-    };
-
-    const handleVoiceAnswer = async ({ fromUserId, answer }) => {
-      const pc = peerConnectionsRef.current.get(fromUserId);
-      if (pc) {
-        console.log(`[WebRTC] Received answer from ${fromUserId}`);
-        await pc.setRemoteDescription(new RTCSessionDescription(answer)).catch(console.error);
-      }
-    };
-
-    const handleIceCandidate = async ({ fromUserId, candidate }) => {
-      const pc = peerConnectionsRef.current.get(fromUserId);
-      if (pc && candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
-      }
-    };
-
-    const handleVoiceUserLeft = ({ userId }) => {
-      closePeer(userId);
-    };
-
-    socket.on('voice_user_joined', handleVoiceUserJoined);
-    socket.on('voice_offer', handleVoiceOffer);
-    socket.on('voice_answer', handleVoiceAnswer);
-    socket.on('ice_candidate', handleIceCandidate);
-    socket.on('voice_user_left', handleVoiceUserLeft);
-
-    return () => {
-      socket.off('voice_user_joined', handleVoiceUserJoined);
-      socket.off('voice_offer', handleVoiceOffer);
-      socket.off('voice_answer', handleVoiceAnswer);
-      socket.off('ice_candidate', handleIceCandidate);
-      socket.off('voice_user_left', handleVoiceUserLeft);
-    };
-  }, [socket, inVoice, currentUserId]);
-
-  const joinVoice = async () => {
-    setIsConnecting(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-
-      localStreamRef.current = stream;
-      setInVoice(true);
-      setIsMuted(false);
-      setIsConnecting(false);
-
-      if (socket) {
-        socket.emit('join_voice');
-      }
-
-      showToast('Joined voice chat.', 'success');
-
-      // Create offers to any existing voice users in room
-      voiceUsers.forEach((usr) => {
-        if (usr.id !== currentUserId) {
-          createPeerOffer(usr.id);
-        }
-      });
-    } catch (err) {
-      setIsConnecting(false);
-      console.error('Microphone permission error:', err);
-      showToast('Microphone permission is required to join voice.', 'error');
-    }
-  };
-
-  const leaveVoice = () => {
-    // Stop mic tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
-
-    // Close all P2P connections
-    peerConnectionsRef.current.forEach((pc, userId) => {
-      pc.close();
-    });
-    peerConnectionsRef.current.clear();
-
-    // Remove remote audio elements
-    remoteAudioElementsRef.current.forEach((audio) => {
-      audio.srcObject = null;
-      audio.remove();
-    });
-    remoteAudioElementsRef.current.clear();
-
-    setInVoice(false);
-    setIsMuted(false);
-
-    if (socket) {
-      socket.emit('leave_voice');
-    }
-  };
-
-  const toggleMuteMic = () => {
-    if (!localStreamRef.current) return;
-    const nextMuted = !isMuted;
-    localStreamRef.current.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
-    setIsMuted(nextMuted);
-
-    if (socket) {
-      socket.emit('voice_state_update', { isMuted: nextMuted });
-    }
-  };
-
-  const toggleSpeakerMute = () => {
-    const nextMuted = !isSpeakerMuted;
-    setIsSpeakerMuted(nextMuted);
-    remoteAudioElementsRef.current.forEach((audio) => {
-      audio.muted = nextMuted;
-    });
-  };
-
-  // Create WebRTC Peer Offer
-  const createPeerOffer = async (targetUserId) => {
-    if (peerConnectionsRef.current.has(targetUserId)) return;
-
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    peerConnectionsRef.current.set(targetUserId, pc);
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
-      });
-    }
-
+  const attachPeerHandlers = (pc, targetUserId) => {
     pc.onicecandidate = (event) => {
       if (event.candidate && socket) {
         socket.emit('ice_candidate', {
@@ -193,66 +42,109 @@ export const VoiceChatBar = ({
       attachRemoteStream(targetUserId, event.streams[0]);
     };
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    pc.onconnectionstatechange = () => {
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+        if (pc.connectionState === 'failed') {
+          console.warn(`[WebRTC] Connection failed: ${targetUserId}`);
+        }
+      }
+    };
+  };
 
-    if (socket) {
-      socket.emit('voice_offer', {
-        targetUserId,
-        offer,
+  const createPeerConnection = (targetUserId) => {
+    let pc = peerConnectionsRef.current.get(targetUserId);
+    if (pc) return pc;
+
+    pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnectionsRef.current.set(targetUserId, pc);
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current);
       });
+    }
+
+    attachPeerHandlers(pc, targetUserId);
+    return pc;
+  };
+
+  const flushPendingIce = async (targetUserId, pc) => {
+    const queued = pendingIceCandidatesRef.current.get(targetUserId) || [];
+    pendingIceCandidatesRef.current.delete(targetUserId);
+
+    for (const candidate of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('[WebRTC] Failed queued ICE candidate:', err);
+      }
     }
   };
 
-  // Handle Incoming WebRTC Peer Offer
-  const handlePeerOffer = async (fromUserId, offer) => {
-    let pc = peerConnectionsRef.current.get(fromUserId);
-    if (!pc) {
-      pc = new RTCPeerConnection(ICE_SERVERS);
-      peerConnectionsRef.current.set(fromUserId, pc);
+  const createPeerOffer = async (targetUserId) => {
+    if (!inVoiceRef.current || targetUserId === currentUserId) return;
+    if (peerConnectionsRef.current.has(targetUserId)) return;
 
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
-          pc.addTrack(track, localStreamRef.current);
-        });
+    try {
+      const pc = createPeerConnection(targetUserId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket?.emit('voice_offer', {
+        targetUserId,
+        offer: pc.localDescription,
+      });
+    } catch (err) {
+      console.error('[WebRTC] Offer failed:', err);
+    }
+  };
+
+  const handlePeerOffer = async (fromUserId, offer) => {
+    if (!inVoiceRef.current) return;
+
+    try {
+      const pc = createPeerConnection(fromUserId);
+
+      if (pc.signalingState !== 'stable') {
+        console.warn('[WebRTC] Ignoring duplicate/colliding offer from', fromUserId);
+        return;
       }
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          socket.emit('ice_candidate', {
-            targetUserId: fromUserId,
-            candidate: event.candidate,
-          });
-        }
-      };
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      await flushPendingIce(fromUserId, pc);
 
-      pc.ontrack = (event) => {
-        attachRemoteStream(fromUserId, event.streams[0]);
-      };
-    }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    if (socket) {
-      socket.emit('voice_answer', {
+      socket?.emit('voice_answer', {
         targetUserId: fromUserId,
-        answer,
+        answer: pc.localDescription,
       });
+    } catch (err) {
+      console.error('[WebRTC] Offer handling failed:', err);
     }
   };
 
   const attachRemoteStream = (userId, stream) => {
     let audio = remoteAudioElementsRef.current.get(userId);
+
     if (!audio) {
       audio = document.createElement('audio');
       audio.autoplay = true;
+      audio.playsInline = true;
+      audio.controls = false;
       audio.muted = isSpeakerMuted;
+      audio.style.display = 'none';
       document.body.appendChild(audio);
       remoteAudioElementsRef.current.set(userId, audio);
     }
+
     audio.srcObject = stream;
+
+    audio.play().catch((err) => {
+      console.warn('[WebRTC] Remote audio playback was blocked:', err);
+      showToast?.('Voice audio is blocked by the browser. Tap the speaker button to try again.', 'info');
+    });
   };
 
   const closePeer = (userId) => {
@@ -262,12 +154,180 @@ export const VoiceChatBar = ({
       peerConnectionsRef.current.delete(userId);
     }
 
+    pendingIceCandidatesRef.current.delete(userId);
+
     const audio = remoteAudioElementsRef.current.get(userId);
     if (audio) {
       audio.srcObject = null;
       audio.remove();
       remoteAudioElementsRef.current.delete(userId);
     }
+  };
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleExistingVoiceUsers = (users) => {
+      if (!inVoiceRef.current) return;
+
+      users.forEach((user) => {
+        if (user.id !== currentUserId) {
+          createPeerOffer(user.id);
+        }
+      });
+    };
+
+    const handleVoiceOffer = ({ fromUserId, offer }) => {
+      handlePeerOffer(fromUserId, offer);
+    };
+
+    const handleVoiceAnswer = async ({ fromUserId, answer }) => {
+      const pc = peerConnectionsRef.current.get(fromUserId);
+      if (!pc) return;
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        await flushPendingIce(fromUserId, pc);
+      } catch (err) {
+        console.error('[WebRTC] Answer handling failed:', err);
+      }
+    };
+
+    const handleIceCandidate = async ({ fromUserId, candidate }) => {
+      if (!candidate) return;
+
+      const pc = peerConnectionsRef.current.get(fromUserId);
+
+      if (!pc || !pc.remoteDescription) {
+        const queue = pendingIceCandidatesRef.current.get(fromUserId) || [];
+        queue.push(candidate);
+        pendingIceCandidatesRef.current.set(fromUserId, queue);
+        return;
+      }
+
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('[WebRTC] ICE candidate failed:', err);
+      }
+    };
+
+    const handleVoiceUserLeft = ({ userId }) => {
+      closePeer(userId);
+    };
+
+    socket.on('voice_existing_users', handleExistingVoiceUsers);
+    socket.on('voice_offer', handleVoiceOffer);
+    socket.on('voice_answer', handleVoiceAnswer);
+    socket.on('ice_candidate', handleIceCandidate);
+    socket.on('voice_user_left', handleVoiceUserLeft);
+
+    return () => {
+      socket.off('voice_existing_users', handleExistingVoiceUsers);
+      socket.off('voice_offer', handleVoiceOffer);
+      socket.off('voice_answer', handleVoiceAnswer);
+      socket.off('ice_candidate', handleIceCandidate);
+      socket.off('voice_user_left', handleVoiceUserLeft);
+    };
+  }, [socket, currentUserId, isSpeakerMuted]);
+
+  const joinVoice = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast('Microphone access is not available in this browser.', 'error');
+      return;
+    }
+
+    setIsConnecting(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+
+      localStreamRef.current = stream;
+      inVoiceRef.current = true;
+      setInVoice(true);
+      setIsMuted(false);
+
+      socket?.emit('join_voice');
+      showToast('Joined voice chat.', 'success');
+    } catch (err) {
+      console.error('Microphone permission error:', err);
+      showToast(
+        err?.name === 'NotAllowedError'
+          ? 'Allow microphone access in your browser and try again.'
+          : 'Could not access your microphone.',
+        'error'
+      );
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const leaveVoice = () => {
+    inVoiceRef.current = false;
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    peerConnectionsRef.current.forEach((pc) => pc.close());
+    peerConnectionsRef.current.clear();
+
+    remoteAudioElementsRef.current.forEach((audio) => {
+      audio.srcObject = null;
+      audio.remove();
+    });
+    remoteAudioElementsRef.current.clear();
+    pendingIceCandidatesRef.current.clear();
+
+    setInVoice(false);
+    setIsMuted(false);
+    socket?.emit('leave_voice');
+  };
+
+  useEffect(() => {
+    return () => {
+      inVoiceRef.current = false;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      peerConnectionsRef.current.forEach((pc) => pc.close());
+      remoteAudioElementsRef.current.forEach((audio) => audio.remove());
+      socket?.emit('leave_voice');
+    };
+  }, [socket]);
+
+  const toggleMuteMic = () => {
+    if (!localStreamRef.current) return;
+
+    const nextMuted = !isMuted;
+    localStreamRef.current.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+
+    setIsMuted(nextMuted);
+    socket?.emit('voice_state_update', { isMuted: nextMuted });
+  };
+
+  const toggleSpeakerMute = () => {
+    const nextMuted = !isSpeakerMuted;
+    setIsSpeakerMuted(nextMuted);
+
+    remoteAudioElementsRef.current.forEach((audio) => {
+      audio.muted = nextMuted;
+      if (!nextMuted) {
+        audio.play().catch((err) => {
+          console.warn('[WebRTC] Speaker playback retry failed:', err);
+        });
+      }
+    });
   };
 
   return (
@@ -315,7 +375,6 @@ export const VoiceChatBar = ({
         }
       `}</style>
 
-      {/* Voice Participants Avatars */}
       <div className="voice-participants-list">
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
           <Radio size={16} color="var(--accent-pink)" />
@@ -337,45 +396,24 @@ export const VoiceChatBar = ({
         )}
       </div>
 
-      {/* Action Controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         {!inVoice ? (
-          <button
-            className="btn btn-primary"
-            style={{ padding: '6px 14px', fontSize: '0.85rem' }}
-            onClick={joinVoice}
-            disabled={isConnecting}
-          >
+          <button className="btn btn-primary" style={{ padding: '6px 14px', fontSize: '0.85rem' }} onClick={joinVoice} disabled={isConnecting}>
             <Mic size={15} />
             {isConnecting ? 'Connecting...' : 'Join voice'}
           </button>
         ) : (
           <>
-            <button
-              className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
-              style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-              onClick={toggleMuteMic}
-              title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
-            >
+            <button className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`} style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={toggleMuteMic}>
               {isMuted ? <MicOff size={15} /> : <Mic size={15} />}
               <span>{isMuted ? 'Muted' : 'Microphone'}</span>
             </button>
 
-            <button
-              className="btn btn-secondary"
-              style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-              onClick={toggleSpeakerMute}
-              title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
-            >
+            <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={toggleSpeakerMute}>
               {isSpeakerMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
             </button>
 
-            <button
-              className="btn btn-danger"
-              style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-              onClick={leaveVoice}
-              title="Leave voice chat"
-            >
+            <button className="btn btn-danger" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={leaveVoice}>
               <PhoneOff size={15} />
               <span>Leave voice</span>
             </button>
